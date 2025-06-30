@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Asylum Interview Practice &mdash; 10-Minute PoC</title>
+<style>
+ :root{font-family:system-ui,sans-serif;background:#f5f7fa;color:#222}
+ main{max-width:700px;margin:4rem auto;padding:2rem;background:#fff;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,.1)}
+ h1{text-align:center;margin-top:0}
+ #question{font-size:1.15rem;margin:2rem 0}
+ #timer{font-weight:600;text-align:center}
+ #mic{display:block;margin:0 auto 1.5rem;font-size:1.5rem;padding:.6rem 1.4rem;border:none;border-radius:50px;background:#0078d4;color:#fff;cursor:pointer}
+ #mic.listening{background:#e81123}
+ #transcript{width:100%;height:180px;font-family:monospace;white-space:pre-wrap}
+ #download{margin-top:1rem;padding:.4rem .8rem}
+ footer{font-size:.85rem;color:#666;text-align:center;margin-top:2rem}
+</style>
+</head>
+<body>
+<main>
+  <h1>Asylum Interview Practice</h1>
+  <p id="timer">10:00</p>
+  <p id="question">Click 🎤 to begin.</p>
+  <button id="mic">🎤 Start</button>
+  <textarea id="transcript" readonly placeholder="Transcript appears here…"></textarea>
+  <button id="download" disabled>Download Transcript</button>
+</main>
+<footer>Runs entirely in your browser. Best in Chrome.</footer>
+
+<script>
+/* ---------- CONFIG ---------- */
+const QUESTIONS = Array.from({length:150},(_,i)=>`Question ${i+1}: …replace with real text…`);
+const MAX_FOLLOWUP_DEPTH = 2;
+const SESSION_MINUTES = 10;    /* <<< 10-minute cap */
+const WORKER_URL = 'https://YOUR_WORKER_URL/followup'; // optional LLM follow-ups
+/* ----------------------------------------------- */
+
+let idx=0, depth=0, endAt=0, listening=false, log=[];
+const $q = document.getElementById('question');
+const $mic= document.getElementById('mic');
+const $txt= document.getElementById('transcript');
+const $dl = document.getElementById('download');
+const $tmr= document.getElementById('timer');
+
+/* --- countdown --- */
+setInterval(()=>{ if(!endAt) return;
+  const left=Math.max(0,endAt-Date.now());
+  $tmr.textContent = `${String(Math.floor(left/6e4)).padStart(2,'0')}:${String(Math.floor(left%6e4/1e3)).padStart(2,'0')}`;
+  if(left<=0) finish();
+},500);
+
+/* --- speech helpers --- */
+function speak(t,cb){ const u=new SpeechSynthesisUtterance(t); u.onend=cb; speechSynthesis.speak(u); }
+const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+if(!SR) alert('Web Speech API unsupported here.');
+const rec=new SR(); rec.lang='en-US'; rec.maxAlternatives=1;
+
+/* --- recognition events --- */
+rec.onresult=async e=>{
+  const ans=e.results[0][0].transcript.trim();
+  log.push({q:$q.textContent,a:ans});
+  $txt.value+=`Q: ${$q.textContent}\nA: ${ans}\n\n`;
+  rec.stop(); listening=false; $mic.classList.remove('listening');
+  await handleAnswer(ans);
+};
+rec.onerror=_=>{ rec.stop(); listening=false; $mic.classList.remove('listening');
+  speak("Sorry, could you repeat that?", listen);
+};
+
+function start(){ endAt=Date.now()+SESSION_MINUTES*60e3;
+  speak("Welcome. We’ll begin the 10-minute practice interview now.", ()=>ask(QUESTIONS[idx]));
+}
+function ask(t){ $q.textContent=t; speak(t,listen); }
+function listen(){ if(Date.now()>=endAt) return finish();
+  try{ rec.start(); listening=true; $mic.classList.add('listening'); }catch{}
+}
+async function handleAnswer(ans){
+  let nxt='NEXT';
+  try{
+    const r=await fetch(WORKER_URL,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({question:$q.textContent,answer:ans,depth})});
+    nxt=(await r.json()).followUp||'NEXT';
+  }catch{}
+  if(nxt==='NEXT' && ans.split(' ').length<20 && depth<1) nxt="Could you provide more specific details?";
+  if(nxt!=='NEXT' && depth<MAX_FOLLOWUP_DEPTH){ depth++; ask(nxt); }
+  else{ depth=0; idx++; idx<QUESTIONS.length&&Date.now()<endAt?ask(QUESTIONS[idx]):finish(); }
+}
+function finish(){ rec.abort(); speechSynthesis.cancel();
+  $q.textContent="Session complete."; $mic.disabled=true; $dl.disabled=false;
+  speak("The interview is now over. Thank you.");
+}
+$mic.onclick=()=>{ if($mic.disabled) return;
+  idx===0&&!log.length?start():!listening&&listen();
+};
+$dl.onclick=()=>{ const blob=new Blob([log.map(x=>`Q: ${x.q}\nA: ${x.a}\n`).join('\n')],{type:'text/plain'});
+  const url=URL.createObjectURL(blob); const a=document.createElement('a');
+  a.href=url; a.download='interview_transcript.txt'; a.click(); URL.revokeObjectURL(url);
+};
+</script>
+</body>
+</html>
